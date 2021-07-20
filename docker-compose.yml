@@ -1,0 +1,18 @@
+version: '3'
+services:
+  frontend:
+    build:
+      context: ./portal/
+      dockerfile: Dockerfile
+    image: panamax.spectrumxg.com/e2e/frontend:latest
+    container_name: frontend
+    ports:
+      - 5000:5000
+  backend:
+    build:
+      context: ./Backend/Portal_API
+      dockerfile: Dockerfile
+    image: panamax.spectrumxg.com/e2e/backend:latest
+    container_name: backend
+    ports:
+      - 8081:8081

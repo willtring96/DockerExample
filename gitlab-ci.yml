@@ -1,0 +1,177 @@
+variables:
+  DOCKER_ARTIFACTORY: docker-artifactory.spectrumflow.net/docker
+  PDE_CLI: panamax.spectrumxg.com/spectrum-toolbox-2/pde-cli:latest
+
+before_script:
+  - type docker >/dev/null 2>&1 && docker login -u gitlab-ci-token -p $CI_JOB_TOKEN panamax.spectrumxg.com || { echo >&2 "Docker not installed"; }
+  - type docker >/dev/null 2>&1 && docker login -u ${ARTIFACTORY_EMAIL} -p ${ARTIFACTORY_API_KEY} docker-artifactory.spectrumflow.net
+
+# This file is a template, and might need editing before it works on your project.
+stages:
+  - test-db-connection
+  - upload-chart
+  - build-jar
+  - build-image
+  - deploy
+
+test-db-connection:
+  image: $PDE_CLI
+  stage: test-db-connection
+  environment:
+    name: Staging
+  tags:
+    - docker
+  script:
+    - apk update
+    - apk add postgresql-dev gcc python3-dev musl-dev
+    - pip install psycopg2-binary
+    - python psql.py
+  when:
+    manual
+
+artifactory-upload:
+  image: panamax.spectrumxg.com/spectrumflow/sf-deploy:develop
+  stage: upload-chart
+  tags:
+    - docker
+  when: manual
+  script:
+    - cd helm/test-rodeo-frontend && ./deploy.sh $ARTIFACTORY_API_KEY
+    - cd ../../helm/test-rodeo-backend && ./deploy.sh $ARTIFACTORY_API_KEY
+
+build-jar:
+  image: $DOCKER_ARTIFACTORY/library/maven:3.6.3-openjdk-11
+  stage: build-jar
+  # when: manual
+  tags:
+    - docker
+  script:
+    - cd Backend/Portal_API
+    # - mvn clean install -Dspring.profiles.active=prod && mvn package -B -e -Dspring.profiles.active=prod
+    - mvn clean package
+  artifacts:
+    paths:
+      - Backend/Portal_API/target/*.jar
+  when:
+    manual
+
+build_image_dev:
+  image: $DOCKER_ARTIFACTORY/docker:latest
+  stage: build-image
+  tags:
+  - docker
+  when: manual
+  script:
+  - cd portal
+  - docker build -t panamax.spectrumxg.com/e2e/testrodeo/frontend:development .
+  - docker push panamax.spectrumxg.com/e2e/testrodeo/frontend:development
+  - cd .. && cd Backend/Portal_API
+  - docker build -t panamax.spectrumxg.com/e2e/testrodeo/backend:development .
+  - docker push panamax.spectrumxg.com/e2e/testrodeo/backend:development
+  only:
+    - Development
+
+build_image_stage:
+  image: $DOCKER_ARTIFACTORY/docker:latest
+  stage: build-image
+  tags:
+  - docker
+  # when: manual
+  script:
+  - cd portal
+  - docker pull panamax.spectrumxg.com/e2e/testrodeo/frontend:staging
+  - docker build -t panamax.spectrumxg.com/e2e/testrodeo/frontend:staging .
+  - docker push panamax.spectrumxg.com/e2e/testrodeo/frontend:staging
+  - cd .. && cd Backend/Portal_API
+  - docker pull panamax.spectrumxg.com/e2e/testrodeo/backend:staging
+  - docker build -t panamax.spectrumxg.com/e2e/testrodeo/backend:staging .
+  - docker push panamax.spectrumxg.com/e2e/testrodeo/backend:staging
+  only:
+    - Staging
+
+build_image_prod:
+  image: $DOCKER_ARTIFACTORY/docker:latest
+  stage: build-image
+  tags:
+  - docker
+  when: manual
+  script:
+  - cd portal
+  - docker pull panamax.spectrumxg.com/e2e/testrodeo/frontend:prod
+  - docker build -t panamax.spectrumxg.com/e2e/testrodeo/frontend:prod .
+  - docker push panamax.spectrumxg.com/e2e/testrodeo/frontend:prod
+  - cd .. && cd Backend/Portal_API
+  - docker pull panamax.spectrumxg.com/e2e/testrodeo/backend:prod
+  - docker build -t panamax.spectrumxg.com/e2e/testrodeo/backend:prod .
+  - docker push panamax.spectrumxg.com/e2e/testrodeo/backend:prod
+  only:
+    - Production
+
+deploy-testrodeo-dev:
+  image: $PDE_CLI
+  stage: deploy
+  tags:
+    - docker
+  variables:
+    # CLUSTER_NAME: ""
+    # CLUSTERID: ""
+    CHARTNAME: "pde-charts/test-rodeo"
+    CLUSTERNAMESPACE: "testrodeo-dev"
+    CHARTVERSION: "0.1.0"
+  when: manual
+  script:
+    - /usr/local/bin/pde-cli -r test-rodeo-dev --chart $CHARTNAME --chart-version $CHARTVERSION -n $CLUSTERNAMESPACE -f env/dev/values.yaml
+    - kubectl rollout restart deployment test-rodeo-dev -n $CLUSTERNAMESPACE
+    - /usr/local/bin/pde-cli -r test-rodeo-backend-dev --chart $CHARTNAME-backend --chart-version $CHARTVERSION -n $CLUSTERNAMESPACE -f env/dev/values-backend.yaml
+    - kubectl rollout restart deployment test-rodeo-backend-dev -n $CLUSTERNAMESPACE
+  environment:
+    name: Production
+    url: https://testrodeo-dev.spectrumtoolbox.com/
+  only:
+    - Development
+
+deploy-testrodeo-stage:
+  image: $PDE_CLI
+  stage: deploy
+  tags:
+    - docker
+  variables:
+    # CLUSTER_NAME: ""
+    # CLUSTERID: ""
+    CHARTNAME: "pde-charts/test-rodeo"
+    CLUSTERNAMESPACE: "testrodeo-stage"
+    CHARTVERSION: "0.1.0"
+  # when: manual
+  script:
+    - /usr/local/bin/pde-cli -r test-rodeo-stage --chart $CHARTNAME --chart-version $CHARTVERSION -n $CLUSTERNAMESPACE -f env/stage/values.yaml
+    - kubectl rollout restart deployment test-rodeo-stage -n $CLUSTERNAMESPACE
+    - /usr/local/bin/pde-cli -r test-rodeo-backend-stage --chart $CHARTNAME-backend --chart-version $CHARTVERSION -n $CLUSTERNAMESPACE -f env/stage/values-backend.yaml
+    - kubectl rollout restart deployment test-rodeo-backend-stage -n $CLUSTERNAMESPACE
+  environment:
+    name: Staging
+    url: https://testrodeo-stage.spectrumtoolbox.com/
+  only:
+    - Staging
+
+deploy-testrodeo-prod:
+  image: $PDE_CLI
+  stage: deploy
+  tags:
+    - docker
+  variables:
+    CLUSTER_NAME: "shared-services-prod"
+    # CLUSTERID: ""
+    CHARTNAME: "pde-charts/test-rodeo"
+    CLUSTERNAMESPACE: "testrodeo"
+    CHARTVERSION: "0.1.0"
+  when: manual
+  script:
+    - /usr/local/bin/pde-cli -r test-rodeo --chart $CHARTNAME --chart-version $CHARTVERSION -n $CLUSTERNAMESPACE -f env/prod/values.yaml
+    - kubectl rollout restart deployment test-rodeo -n $CLUSTERNAMESPACE
+    - /usr/local/bin/pde-cli -r test-rodeo-backend --chart $CHARTNAME-backend --chart-version $CHARTVERSION -n $CLUSTERNAMESPACE -f env/prod/values-backend.yaml
+    - kubectl rollout restart deployment test-rodeo-backend -n $CLUSTERNAMESPACE
+  environment:
+    name: Production
+    url: https://testrodeo.spectrumtoolbox.com/
+  only:
+    - Production
